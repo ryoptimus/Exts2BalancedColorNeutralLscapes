@@ -1,0 +1,5 @@
+deap
+matplotlib
+numpy
+pytest
+pytest-json-report
