@@ -14,7 +14,6 @@ class Graph:
         self.n = n
         self.k = k
         self.graph = [None] * n
-        self.edges = []
 
     def add_edge(self, u: int, v: int):
         # Add v to u's adjacency list
@@ -26,9 +25,6 @@ class Graph:
         new_node = AdjNode(u)
         new_node.next = self.graph[v]
         self.graph[v] = new_node
-
-        # Store edge
-        self.edges.append((u, v))
 
 
 def init_graph(fp):
@@ -48,17 +44,32 @@ def init_graph(fp):
 
     return g
 
+def unique_edges(graph):
+    edges: List[Tuple[int, int]] = []
+    for src in range(graph.n):
+        node = graph.graph[src]
+        while node is not None:
+            dest = node.vertex
+            if src < dest:
+                edges.append((src, dest))
+            node = node.next
+    return edges
+
 # Use to check how many of each color for fitness
-def get_possible_colors(graph):
+def get_dcolors(graph):
     width = get_color_len(graph)
     combos = []
     for d in range(graph.k):
+        combos.append(d)
 
-        blist = [int(i) for i in format(d, 'b').zfill(width)]
-        combos.append(blist)
-
-    print(f"combos: {combos}")
     return combos
+
+def get_color_cts(dcol, dmap):
+    ccts = [0] * len(dcol)
+    for d in dmap:
+        ccts[d] += 1
+
+    return ccts
 
 # Retrieve bit count for color
 def get_color_len(graph):
@@ -92,21 +103,13 @@ def decode_individual(graph, individual):
             return None
 
         dmap.append(color)
+
     return dmap
 
 def eval_balance(graph, individual):
-    print("Fxn for eval balanced-coloring fitness")
-# Let G = (V, E) be a graph with n vertices, m undirected edges, and k colors. Let c(i) be the color assigned to vertex i.
-# For an edge (i, j), define delta(i, j) = 1 if c(i) != c(j), and delta(i, j) = 0 otherwise.
-#
-# The balanced-coloring fitness is:
-# F(C(G)) = (sum over edges delta(i, j) / m) * product over colors c of (count(c) / n)
-# The product should include every valid color from 0 through graph.k - 1. If a color is missing, its factor
-# is zero, so the total balanced-coloring fitness is zero. Return the result as a one-item tuple:
-# return (fitness,)
-# individual = [0, 1, 0, 0, 1, 0, 0, 1]
-# # decoded colors: [1, 0, 2, 1]
-# eval_balance(graph, individual) == (0.03125,)
+
+    # The balanced-coloring fitness is:
+    # F(C(G)) = (sum over edges delta(i, j) / m) * product over colors c of (count(c) / n)
 
     dmap = decode_individual(graph, individual)
     if dmap is None:
@@ -114,16 +117,28 @@ def eval_balance(graph, individual):
 
     satisfied = 0
 
-    for u, v in graph.edges:
+    edges = unique_edges(graph)
+
+    for u, v in edges:
         if dmap[u] != dmap[v]:
             satisfied += 1
 
-    total_edges = len(graph.edges)
+    total_edges = len(edges)
 
     if total_edges == 0:
         return (1.0,)
 
-    fitness = satisfied / total_edges
+    dcol = get_dcolors(graph)
+    ccts = get_color_cts(dcol, dmap)
+    if 0 in ccts:
+        return (0.0,)
+
+    prod = 1.0
+    for c in ccts:
+        prod *= (c / graph.n)
+
+    fitness = satisfied / total_edges * prod
+    return (fitness,)
 
 def eval_graph(graph, individual):
     dmap = decode_individual(graph, individual)
@@ -133,11 +148,13 @@ def eval_graph(graph, individual):
 
     satisfied = 0
 
-    for u, v in graph.edges:
+    edges = unique_edges(graph)
+
+    for u, v in edges:
         if dmap[u] != dmap[v]:
             satisfied += 1
 
-    total_edges = len(graph.edges)
+    total_edges = len(edges)
 
     if total_edges == 0:
         return (1.0,)
@@ -146,6 +163,52 @@ def eval_graph(graph, individual):
 
     return (fitness,)
 
+def one_neutral(graph, individual):
+    dmap = decode_individual(graph, individual)
+
+    if dmap is None:
+        return 0.0
+
+    # Compute original fitness
+    og_fitness = eval_graph(graph, individual)[0]
+
+    neutral_ct = 0
+    total_muts = graph.n * (graph.k - 1)
+
+    if total_muts == 0:
+        return 0.0
+
+    # Number of bits representing each color
+    width = max(1, (graph.k - 1).bit_length())
+
+    # Try changing one vertex at a time
+    for d in range(graph.n):
+
+        og_c = dmap[d]
+
+        # Try every valid color
+        for n_c in range(graph.k):
+
+            # Skip the vertex's existing color
+            if n_c == og_c:
+                continue
+
+            # Make a copy of original individual
+            mutant = individual.copy()
+
+            # Convert the new color into binary bits
+            binary = format(n_c, f"0{width}b")
+            n_bits = [int(bit) for bit in binary]
+
+            start = d * width
+            mutant[start:start + width] = n_bits
+
+            m_fitness = eval_graph(graph, mutant)[0]
+
+            if m_fitness == og_fitness:
+                neutral_ct += 1
+
+    return neutral_ct / total_muts
 
 def run_ga(fp, population_size=300, ngen=200, cxpb=0.8, mutpb=0.3):
     from deap import algorithms, base, creator, tools
@@ -201,14 +264,14 @@ def run_ga(fp, population_size=300, ngen=200, cxpb=0.8, mutpb=0.3):
     print(f"Best individual: {best_individual}")
     coloring = decode_individual(graph, best_individual)
     fitness = eval_graph(graph, best_individual)
+    bc_fitness = eval_balance(graph, best_individual)
+    os_neut = one_neutral(graph, best_individual)
 
-    print(f"Best fitness: {fitness[0]}")
     print(f"Color assignment: {coloring}")
-
-    return fitness[0]
+    print(f"Balanced-color fitness: {bc_fitness[0]}")
+    print(f"One-step neutrality: {os_neut}")
 
 def main():
-    print("Hello world!")
     gdir = Path("graphs")
     gpath = os.getcwd() / gdir
     for f in gpath.iterdir():
